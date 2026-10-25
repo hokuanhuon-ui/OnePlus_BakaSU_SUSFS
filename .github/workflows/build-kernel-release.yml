@@ -971,27 +971,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 🏷️ Generate and Create New Tag
-        run: |
-          # Only search for tags starting with this SUSFS version
-          LATEST_MATCHING_TAG=$(gh api repos/$REPO_OWNER/$REPO_NAME/tags \
-            --jq "[.[] | select(.name | startswith(\"${SUSFS_BASE_VERSION}-r\"))] \
-                  | sort_by(.name | split(\"-r\")[1] | tonumber) \
-                  | last | .name // empty")
-          
-          if [ -z "$LATEST_MATCHING_TAG" ]; then
-            # No existing release for this version SUSFS → first release
-            NEW_TAG="${SUSFS_BASE_VERSION}-r1"
-          else
-            # Only increment the -r* suffix of the latest release for this version
-            NEW_TAG=$(echo "$LATEST_MATCHING_TAG" | awk -F'-r' '{printf "%s-r%d", $1, $2+1}')
-          fi
-          
-          echo "New tag: $NEW_TAG"
-          echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_ENV
-          git tag $NEW_TAG
-          git push origin $NEW_TAG
-
       - name: 📥 Download Artifacts
         uses: actions/download-artifact@v8
         with:
@@ -1010,6 +989,39 @@ jobs:
           rm -rf ./downloaded-artifacts/ccache-binary
           rm -rf ./downloaded-artifacts/susfs-archives
           echo "✅ build helper artifacts excluded from release staging"
+
+      - name: ✅ Validate complete release asset set
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ needs.set-op-model.outputs.device_count }}"
+          asset_count=$(find ./downloaded-artifacts -maxdepth 1 -type f -name 'AK3_*.zip' | wc -l | tr -d ' ')
+          unique_count=$(find ./downloaded-artifacts -maxdepth 1 -type f -name 'AK3_*.zip' -printf '%f\n' | sort -u | wc -l | tr -d ' ')
+
+          if [ "$asset_count" -ne "$expected" ] || [ "$unique_count" -ne "$expected" ]; then
+            echo "::error::Release asset mismatch: expected $expected unique ZIPs, found $asset_count files / $unique_count unique names"
+            exit 1
+          fi
+          echo "✅ validated $expected unique release ZIPs"
+
+      - name: 🏷️ Generate and Create New Tag
+        run: |
+          # Only create a tag after the complete, unique asset set is validated.
+          LATEST_MATCHING_TAG=$(gh api repos/$REPO_OWNER/$REPO_NAME/tags \
+            --jq "[.[] | select(.name | startswith(\"${SUSFS_BASE_VERSION}-r\"))] \
+                  | sort_by(.name | split(\"-r\")[1] | tonumber) \
+                  | last | .name // empty")
+
+          if [ -z "$LATEST_MATCHING_TAG" ]; then
+            NEW_TAG="${SUSFS_BASE_VERSION}-r1"
+          else
+            NEW_TAG=$(echo "$LATEST_MATCHING_TAG" | awk -F'-r' '{printf "%s-r%d", $1, $2+1}')
+          fi
+
+          echo "New tag: $NEW_TAG"
+          echo "NEW_TAG=${NEW_TAG}" >> "$GITHUB_ENV"
+          git tag "$NEW_TAG"
+          git push origin "$NEW_TAG"
 
       - name: 📝 Generate Device List and Final Release Notes
         id: generate-notes
@@ -1062,7 +1074,7 @@ jobs:
             <<< "${{ needs.set-op-model.outputs.active_gki_keys }}"
           
           cat << EOF > release_notes.md
-          # 🎯 OnePlus Kernels with $KSU_TYPE & SUSFS $SUSFS_BASE_VERSION
+          # 🎯 OnePlus Kernels with $ksu_type & SUSFS $SUSFS_BASE_VERSION
           
           > **Build Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')  
           > **Build ID:** \`${{ github.run_id }}\`  
@@ -1176,9 +1188,9 @@ jobs:
           }
           
           ksu_display=$(ksu_display_value "$ksu_ref" "$ksu_resolved_hash")
-          if [ "$KSU_TYPE" = "BakaSU" ]; then
+          if [ "$ksu_type" = "BakaSU" ]; then
             cat << EOF >> release_notes.md
-          | **BakaSU Branch/Hash** | \`$KSU_BRANCH\` |
+          | **BakaSU Branch/Hash** | \`$ksu_display\` |
           | **BakaSU Version** | \`$ksu_ver_global\` |
           EOF
           elif [ "$ksu_type" == "KSU" ]; then
